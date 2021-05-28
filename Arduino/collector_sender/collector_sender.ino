@@ -6,9 +6,15 @@
  * stepper dir --> D5
  */
 
+#define ENCODER_A_PIN            PIND2
+#define ENCODER_B_PIN            PIND3
+#define STEP_PIN                 PIND4
+#define DIR_PIN                  PIND5
+
 #define DATA_BUFFER_SIZE         16  // valid values are 2,4,8,16,32, and 64
 #define TIMER_INTERVAL           250 // how often (in milliseconds) to store stepper and encoder counts. valid range is 1-250
 
+//header byte prefixes (just the two MSBs)
 #define ARD_NORMAL_BYTE          0x00
 #define ARD_ERROR_BYTE           0x40
 #define ARD_SYNC_BYTE            0x80
@@ -17,33 +23,21 @@
 #define BAD_ACK_BYTE             0x40
 #define BUFFER_EMPTY_BYTE        0x80 
 
-
-volatile int encoderList[DATA_BUFFER_SIZE];
-volatile int stepperList[DATA_BUFFER_SIZE];
+//variables for interrupts
+volatile int encoderBuffer[DATA_BUFFER_SIZE];
+volatile int stepperBuffer[DATA_BUFFER_SIZE];
 volatile bool dataBufferTracker[DATA_BUFFER_SIZE];
 volatile int encoderPos = 0;
 volatile int stepperPos = 0;
 volatile bool bufferOverflow = 0;
 volatile bool encoderOverflow = 0;
 volatile bool stepperOverflow = 0;
-
 volatile byte dataIndex = 0;
-byte txIndex = 0;
-byte rxIndex = 0;
-bool txReady = 1;
-
-// header byte prefixes
-byte goodAck;
-byte badAck;
-byte bufferEmpty;
-
-byte ackrecord[16];
-
 
 
 void setup() {
 
-  Serial.begin(250000);  //begin serial with even parity
+  Serial.begin(250000);
   Serial.write(DATA_BUFFER_SIZE);  //tell python the data buffer size so it can set its index size. TODO: get a response verifying good receipt
   bool ledState = 1;
   while (Serial.available() < 1){
@@ -58,8 +52,8 @@ void setup() {
 
   //initialize buffers
   for (int i = 0; i < DATA_BUFFER_SIZE; i++) {
-    encoderList[i] = i;
-    stepperList[i] = i;
+    encoderBuffer[i] = 0;
+    stepperBuffer[i] = 0;
     dataBufferTracker[i] = 0;
   }
 
@@ -79,12 +73,12 @@ void setup() {
   PCICR  |= B00000100;  //enable pin change interrupts on PORTD
   sei();  
   
-  //enable inturrupts
+  //mask inturrupts
   TCNT1 = 0;  //reset timer
-  TIMSK1 |= (1 << OCIE1A);  //unmask timer interrupt
-  EIMSK  |= (1 << INT0);  //unmask external interrupt on D2
-  EIMSK  |= (1 << INT1);  //unmask external intturpt on D3
-  PCMSK2 |= (1 << PCINT20); //unmask pin change interrupt on D4
+  TIMSK1 |= (1 << OCIE1A);  //mask timer interrupt
+  EIMSK  |= (1 << INT0);  //mask external interrupt on D2
+  EIMSK  |= (1 << INT1);  //mask external interrupt on D3
+  PCMSK2 |= (1 << PCINT20); //mask pin change interrupt on D4
 }
 
 void loop() {
@@ -94,80 +88,85 @@ void loop() {
   
   //check for buffer overflow
   if (bufferOverflow || encoderOverflow || stepperOverflow) OverflowHandler();
-  // TODO make do this with a software inturrupt on the overflow bits?
+  // TODO make this with a software inturrupt on the overflow bits?
 
   // handle acks
   byte rxBufferSize = Serial.available();
-  bool lastAckBad = 0;
+  static bool lastAckBad = 0;
   if (rxBufferSize){
     for (int i = 0; i < rxBufferSize; i++) {
       int ack = Serial.read();
-      if (ack ^ 0xc0 == bufferEmpty) {
+      if (ack ^ 0xc0 == BUFFER_EMPTY_BYTE) {
         if (lastAckBad) sendSyncPackets(rxIndex);
         txReady = 1;
         continue;        
-      }
-      if (ack == goodAck | (rxIndex + 1)) {
+      }else if (ack == GOOD_ACK_BYTE | (rxIndex + 1)) {
         cli();
         dataBufferTracker[rxIndex] = 0;
         sei();
         rxIndex++;
         continue;
-      }
+      }else {
       txReady = 0;
+      lastAckBad = 1;
       sendSyncPackets(rxIndex);
       txIndex = rxIndex + 1;
+      }
     }
   }
   
   //build and send message
   if (txReady) {
-    if (txIndex != dataIndex) {  //only send if there's new data
+    cli();
+    byte dataIndex2 = dataIndex;  //prevent interrupts from changing dataIndex during checking (maybe not necessary?)
+    sei();
+    if (txIndex != dataIndex2) {  //only send if there's new data
       //build message
-      if (txIndex == DATA_BUFFER_SIZE - 1) txIndex = 0; //increment transmit index with artificial overflow
-      else txIndex++;
       byte msg[5] = {
         ARD_NORMAL_BYTE | txIndex,
-        (unsigned int)encoderList[txIndex] >> 8,  //cast to unsigned int to prevent sign extension on shifting
-        encoderList[txIndex],
-        (unsigned int)stepperList[txIndex] >> 8,
-        stepperList[txIndex],
+        (unsigned int)encoderBuffer[txIndex] >> 8,  //cast to unsigned int to prevent sign extension on shifting
+        encoderBuffer[txIndex],
+        (unsigned int)stepperBuffer[txIndex] >> 8,
+        stepperBuffer[txIndex],
         };
       Serial.write(msg, 5);
+      if (txIndex == DATA_BUFFER_SIZE - 1) txIndex = 0; //increment transmit index with artificial overflow
+      else txIndex++;
     }
   }
 }
 
 ISR(INT0_vect) {
   //trigger on encoder channel A state change
-  if (PIND2 == PIND3) encoderPos++; //check state of other channel
+  if (ENCODER_A_PIN == ENCODER_B_PIN) encoderPos++; //check state of other channel
   else encoderPos--;
   if ((encoderPos == 32767) || (encoderPos == -32768)) encoderOverflow = 1;
 }
 
 ISR(INT1_vect) {
   //trigger on encoderchannel B state change
-  if (PIND2 == PIND3) encoderPos--; //check state of other channel
+  if (ENCODER_A_PIN == ENCODER_B_PIN) encoderPos--; //check state of other channel
   else encoderPos++;
   if ((encoderPos == 32767) || (encoderPos == -32768)) encoderOverflow = 1;
 }
 
 ISR(PCINT2_vect) {
-  //trigger on step signal rising edge
-  if (PIND5) stepperPos++;
-  else stepperPos--;
-  if ((stepperPos == 32767) || (stepperPos == -32768)) stepperOverflow = 1;
+  if (STEP_PIN) {//increment on step signal rising edge only
+    if (DIR_PIN) stepperPos++;
+    else stepperPos--;
+    if ((stepperPos == 32767) || (stepperPos == -32768)) stepperOverflow = 1;
+  }
 }
 
 ISR(TIMER1_COMPA_vect) {
-  if (dataIndex == DATA_BUFFER_SIZE - 1) dataIndex = 0; //increment with artificial overflow
-  else dataIndex++;
-  if (dataBufferTracker[dataIndex]) bufferOverflow = 1; //don't write data to list elements that haven't been acknowledged
-  encoderList[dataIndex] = encoderPos; //put encoder and stepper positions in the buffer
-  stepperList[dataIndex] = stepperPos;
+  if (dataBufferTracker[dataIndex]) bufferOverflow = 1; //don't overwrite data for which a receipt hasn't been acknowledged
+  encoderBuffer[dataIndex] = encoderPos; //put encoder and stepper positions in the buffer
+  stepperBuffer[dataIndex] = stepperPos;
   dataBufferTracker[dataIndex] = 1; //mark the tracker for this index for the buffer overflow tracking
   encoderPos = 0; //reset encoder/stepper positions
   stepperPos = 0;
+  if (dataIndex == DATA_BUFFER_SIZE - 1) dataIndex = 0; //increment with artificial overflow
+  else dataIndex++;
 }
 
 void sendSyncPackets(byte index) {
