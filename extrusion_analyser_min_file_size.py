@@ -11,7 +11,7 @@ AVG_SAMPLES          = 1         # number of data points for rolling averages
 REVERSE_ENCODER_DIR  = False
 REVERSE_STEPPER_DIR  = True
 VERBOSE              = False
-RESEND_ON_ERROR      = False      # setting to zero may enable faster sampling, but crc and indexing errors will not be corrected. They will still be noted in the csv.
+RESEND_ON_ERROR      = True      # setting to zero may enable faster sampling, but crc and indexing errors will not be corrected. They will still be noted in the csv.
 FILAMENT_DIAMETER    = 1.75
 STEPPER_MM_PER_STEP  = 0.0011922  # mm of filament per microstep; equivalent to step distance
 ENCODER_MM_PER_COUNT = 0.0036108 # mm of filament per encoder tick; depends on sensor construction and encoder resolution
@@ -64,7 +64,7 @@ with open(filename, 'a', newline='') as f:
     writer.writerow(['stepper scaling (mm/microstep): ', str(STEPPER_MM_PER_STEP)])
     writer.writerow(['encoder scaling (mm/count): ', str(ENCODER_MM_PER_COUNT)])
     writer.writerow('')    
-    writer.writerow(['sample#','time','encoder','stepper','encoder_avg','stepper_avg','velocity_cmd','velocity_act','flowrate_cmd','flowrate_act','pcnt_diff','error_on_sample','msg_hex','exp_crc'])
+    writer.writerow(['encoder','stepper','error_on_sample','msg_hex','exp_crc'])
     
     rx_index = 0
     sample_num = 0
@@ -126,7 +126,7 @@ with open(filename, 'a', newline='') as f:
                     if flowrate_cmd != 0:
                         pcnt_diff = (flowrate_act - flowrate_cmd) / flowrate_cmd * 100
                     
-                    row_data = [str(sample_num), str(time_at_sample), str(encoder_pos),str(stepper_pos), str(encoder_avg_pos), str(stepper_avg_pos), str(velocity_cmd), str(velocity_act), str(flowrate_cmd), str(flowrate_act), str(pcnt_diff)]
+                    row_data = [str(encoder_pos),str(stepper_pos)]
                     if not good_msg :                
                         row_error_data =  [str(not good_msg), ':'.join((hex(x)) for x in msg), hex(crc)]
                         for i in row_error_data:
